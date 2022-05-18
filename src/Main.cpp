@@ -33,7 +33,7 @@ void* GlobalLoggerData = nullptr;
 AssertHandlerFn* GlobalAssertHandler = AssertHandler;
 void* GlobalAssertHandlerData = nullptr;
 
-enum struct PrimitiveType
+enum struct BuiltInType
 {
     Unknown = 0,
     SignedShort,
@@ -54,10 +54,9 @@ enum struct PrimitiveType
     Float,
     Double,
     LongDouble,
-    Pointer,
 };
 
-const char* ToString(PrimitiveType t)
+const char* ToString(BuiltInType t)
 {
     static const char* names[] = {
         "Unknown",
@@ -79,40 +78,38 @@ const char* ToString(PrimitiveType t)
         "Float",
         "Double",
         "LongDouble",
-        "Pointer"
     };
     Assert((int)t < ArrayCount(names));
     return names[(int)t];
 }
 
-PrimitiveType ClangTypeToPrimitive(CXTypeKind clangType)
+BuiltInType ClangTypeToBuiltIn(CXTypeKind clangType)
 {
     switch (clangType)
     {
-    case CXType_Short: return PrimitiveType::SignedShort;
-    case CXType_UShort: return PrimitiveType::UnsignedShort;
-    case CXType_Int: return PrimitiveType::SignedInt;
-    case CXType_UInt: return PrimitiveType::UnsignedInt;
-    case CXType_Long: return PrimitiveType::SignedLong;
-    case CXType_ULong: return PrimitiveType::UnsignedLong;
-    case CXType_LongLong: return PrimitiveType::SignedLongLong;
-    case CXType_ULongLong: return PrimitiveType::UnsignedLongLong;
+    case CXType_Short: return BuiltInType::SignedShort;
+    case CXType_UShort: return BuiltInType::UnsignedShort;
+    case CXType_Int: return BuiltInType::SignedInt;
+    case CXType_UInt: return BuiltInType::UnsignedInt;
+    case CXType_Long: return BuiltInType::SignedLong;
+    case CXType_ULong: return BuiltInType::UnsignedLong;
+    case CXType_LongLong: return BuiltInType::SignedLongLong;
+    case CXType_ULongLong: return BuiltInType::UnsignedLongLong;
     // nocheckin Check these
-    case CXType_SChar: return PrimitiveType::SignedChar;
-    case CXType_Char_S: return PrimitiveType::SignedChar;
-    case CXType_UChar: return PrimitiveType::UnsignedChar;
-    case CXType_Char_U: return PrimitiveType::UnsignedChar;
-    //case CXType_SChar: return PrimitiveType::Char8;
+    case CXType_SChar: return BuiltInType::SignedChar;
+    case CXType_Char_S: return BuiltInType::SignedChar;
+    case CXType_UChar: return BuiltInType::UnsignedChar;
+    case CXType_Char_U: return BuiltInType::UnsignedChar;
+    //case CXType_SChar: return BuiltInType::Char8;
 
-    case CXType_Bool: return PrimitiveType::Bool;
-    case CXType_Char16: return PrimitiveType::Char16;
-    case CXType_Char32: return PrimitiveType::Char32;
-    case CXType_WChar: return PrimitiveType::Wchar;
-    case CXType_Float: return PrimitiveType::Float;
-    case CXType_Double: return PrimitiveType::Double;
-    case CXType_LongDouble: return PrimitiveType::LongDouble;
-    case CXType_Pointer: return PrimitiveType::Pointer;
-    default: return PrimitiveType::Unknown;
+    case CXType_Bool: return BuiltInType::Bool;
+    case CXType_Char16: return BuiltInType::Char16;
+    case CXType_Char32: return BuiltInType::Char32;
+    case CXType_WChar: return BuiltInType::Wchar;
+    case CXType_Float: return BuiltInType::Float;
+    case CXType_Double: return BuiltInType::Double;
+    case CXType_LongDouble: return BuiltInType::LongDouble;
+    default: return BuiltInType::Unknown;
     }
 }
 
@@ -150,7 +147,7 @@ struct AstNode
 struct EnumData
 {
     const char* name;
-    PrimitiveType underlyingType;
+    BuiltInType underlyingType;
 };
 
 struct EnumConstantData
@@ -165,6 +162,29 @@ struct StructData
     const char* name;
     u32 size;
     u32 align;
+};
+
+struct TypeInfo
+{
+    bool isBuiltIn;
+    bool isPointer;
+    bool isArray;
+    bool isStruct;
+    bool isEnum;
+    BuiltInType builtInType;
+    u32 arrayCount;
+    // TODO: Further resolve
+    const char* structName;
+    const char* enumName;
+    //BuiltInType enumUnderlyingType;
+    TypeInfo* underlyingType;
+};
+
+struct FieldData
+{
+    const char* name;
+    u32 offset;
+    TypeInfo* typeInfo;
 };
 
 struct VisitorData
@@ -235,6 +255,90 @@ CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _d
     return CXChildVisit_Continue;
 }
 
+TypeInfo* ResolveFieldType(CXType type)
+{
+    BuiltInType builtInType = ClangTypeToBuiltIn(type.kind);
+
+    if (builtInType != BuiltInType::Unknown)
+    {
+        auto typeInfo = (TypeInfo*)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
+
+        typeInfo->isBuiltIn = true;
+        typeInfo->builtInType = builtInType;
+        return typeInfo;
+    }
+
+    if (type.kind == CXType_Pointer)
+    {
+        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
+
+        typeInfo->isPointer = true;
+
+        CXType pointeeType = clang_getPointeeType(type);
+
+        typeInfo->underlyingType = ResolveFieldType(pointeeType);
+        return typeInfo;
+    }
+
+    if (type.kind == CXType_ConstantArray)
+    {
+        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
+
+        long long arraySize = clang_getArraySize(type);
+        Assert(arraySize >= 0);
+
+        CXType elementType = clang_getArrayElementType(type);
+
+        typeInfo->isArray = true;
+        typeInfo->arrayCount = (u32)arraySize;
+        typeInfo->underlyingType = ResolveFieldType(elementType);
+        return typeInfo;
+    }
+
+    if (type.kind == CXType_Typedef)
+    {
+        CXType actualType = clang_getCanonicalType(type);
+        return ResolveFieldType(actualType);
+    }
+
+    if (type.kind == CXType_Record)
+    {
+        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
+
+        CXString typeSpelling = clang_getTypeSpelling(type);
+        const char* typeSpellingStr = clang_getCString(typeSpelling);
+
+        typeInfo->isStruct = true;
+        typeInfo->structName = typeSpellingStr;
+        return typeInfo;
+    }
+
+    if (type.kind == CXType_Elaborated)
+    {
+        CXType actualType = clang_Type_getNamedType(type);
+        return ResolveFieldType(actualType);
+    }
+
+    if (type.kind == CXType_Enum)
+    {
+        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
+
+        CXString typeSpelling = clang_getTypeSpelling(type);
+        const char *typeSpellingStr = clang_getCString(typeSpelling);
+
+        typeInfo->isEnum = true;
+        typeInfo->enumName = typeSpellingStr;
+        return typeInfo;
+    }
+
+    return nullptr;
+}
+
 CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
 {
     auto data = (VisitorData*)_data;
@@ -244,6 +348,23 @@ CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData 
     {
         AstNode node;
         node.type = AstNodeType::Field;
+        auto nodeData = (FieldData*)malloc(sizeof(FieldData));
+        node.data = nodeData;
+
+        CXString name = clang_getCursorSpelling(cursor);
+        const char* nameStr = clang_getCString(name);
+
+        long long offset = clang_Cursor_getOffsetOfField(cursor);
+        // TODO: Proper error handling.
+        Assert(offset >= 0);
+
+        CXType type = clang_getCursorType(cursor);
+        TypeInfo* typeInfo = ResolveFieldType(type);
+
+        nodeData->name = nameStr;
+        nodeData->offset = (u32)offset;
+        nodeData->typeInfo = typeInfo;
+
         data->stack.back()->children.push_back(node);
     }
     else if (kind != CXCursor_AnnotateAttr)
@@ -329,7 +450,7 @@ CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientD
                 node->type = AstNodeType::Enum;
 
                 CXType clangUnderlyingType = clang_getEnumDeclIntegerType(parent);
-                PrimitiveType type = ClangTypeToPrimitive(clangUnderlyingType.kind);
+                BuiltInType type = ClangTypeToBuiltIn(clangUnderlyingType.kind);
 
                 auto nodeData = (EnumData*)malloc(sizeof(EnumData));
                 nodeData->name = spellingStr;
@@ -350,8 +471,10 @@ CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientD
                     break;
                 }
 
-                CXString spelling = clang_getCursorSpelling(parent);
+                CXType type = clang_getCursorType(parent);
+                CXString spelling = clang_getTypeSpelling(type);
                 const char *spellingStr = clang_getCString(spelling);
+                LogPrint("Struct spelling: %s\n", spellingStr);
 
                 if (CheckTypeIsAlreadyProcessed(data, spellingStr))
                 {
@@ -366,8 +489,8 @@ CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientD
 
                 auto nodeData = (StructData *)malloc(sizeof(StructData));
                 nodeData->name = spellingStr;
-                //nodeData->size = (u32)clang_Type_getSizeOf();
-                //nodeData->align = (u32)clang_Type_getAlignOf();
+                nodeData->size = (u32)clang_Type_getSizeOf(type);
+                nodeData->align = (u32)clang_Type_getAlignOf(type);
 
                 node->data = nodeData;
 
@@ -381,6 +504,83 @@ CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientD
     }
 
     return CXChildVisit_Recurse;
+}
+
+void OutputTypeInfo(TypeInfo* info)
+{
+    if (!info)
+    {
+        return;
+    }
+
+    if (info->isBuiltIn)
+    {
+        LogPrint("%s ", ToString(info->builtInType));
+    }
+    else if (info->isPointer)
+    {
+        LogPrint("* ");
+        OutputTypeInfo(info->underlyingType);
+    }
+    else if (info->isArray)
+    {
+        LogPrint("[%lu] ", info->arrayCount);
+        OutputTypeInfo(info->underlyingType);
+    }
+    else if (info->isStruct)
+    {
+        LogPrint("%s ", info->structName);
+    }
+    else if (info->isEnum)
+    {
+        LogPrint("%s ", info->enumName);
+    }
+}
+
+void VisitAst(AstNode* node)
+{
+    LogPrint("\nNode: %s\n", ToString(node->type));
+    if (node->type == AstNodeType::Enum)
+    {
+        auto data = (EnumData*)node->data;
+        LogPrint("Name: %s, underlying type: %s\n", data->name, ToString(data->underlyingType));
+    }
+
+    if (node->type == AstNodeType::EnumConstant)
+    {
+        auto data = (EnumConstantData*)node->data;
+        LogPrint("Name: %s, sValue: %lld, uValue: %llu\n", data->name, data->signedValue, data->unsignedValue);
+    }
+
+    if (node->type == AstNodeType::Struct)
+    {
+        auto data = (StructData*)node->data;
+        LogPrint("Name: %s, size: %lu, align: %lu\n", data->name, data->size, data->align);
+    }
+
+    if (node->type == AstNodeType::Field)
+    {
+        auto data = (FieldData*)node->data;
+        LogPrint("Name: %s, offset: %lu\n", data->name, data->offset);
+        LogPrint("Type: ");
+        OutputTypeInfo(data->typeInfo);
+        LogPrint("\n");
+    }
+
+    if (node->children.size())
+    {
+        LogPrint("Children:\n");
+    }
+
+    for (auto& it : node->children)
+    {
+        VisitAst(&it);
+    }
+
+    if (node->children.size())
+    {
+        LogPrint("End:\n");
+    }
 }
 
 std::string getCursorKindName( CXCursorKind cursorKind )
@@ -399,38 +599,6 @@ std::string getCursorSpelling( CXCursor cursor )
 
   clang_disposeString( cursorSpelling );
   return result;
-}
-
-void VisitAst(AstNode* node)
-{
-    LogPrint("\nNode: %s\n", ToString(node->type));
-    if (node->type == AstNodeType::Enum)
-    {
-        auto data = (EnumData*)node->data;
-        LogPrint("Name: %s, underlying type: %s\n", data->name, ToString(data->underlyingType));
-    }
-
-    if (node->type == AstNodeType::EnumConstant)
-    {
-        auto data = (EnumConstantData*)node->data;
-        LogPrint("Name: %s, sValue: %lld, uValue: %llu\n", data->name, data->signedValue, data->unsignedValue);
-    }
-
-
-    if (node->children.size())
-    {
-        LogPrint("Children:\n");
-    }
-
-    for (auto& it : node->children)
-    {
-        VisitAst(&it);
-    }
-
-    if (node->children.size())
-    {
-        LogPrint("End:\n");
-    }
 }
 
 CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData clientData)
@@ -469,7 +637,7 @@ int main(int argc, char** argv)
     data.stack.push_back(&data.rootNode);
 
     unsigned int level = 0;
-    clang_visitChildren(rootCursor, DumpAst, &level);
+    //clang_visitChildren(rootCursor, DumpAst, &level);
 
 
     clang_visitChildren(rootCursor, AttributesVisitor, &data);
