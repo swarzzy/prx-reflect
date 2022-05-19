@@ -164,13 +164,19 @@ struct StructData
     u32 align;
 };
 
+enum struct TypeKind
+{
+    Unknown = 0,
+    BuiltIn,
+    Pointer,
+    Array,
+    Struct,
+    Enum
+};
+
 struct TypeInfo
 {
-    bool isBuiltIn;
-    bool isPointer;
-    bool isArray;
-    bool isStruct;
-    bool isEnum;
+    TypeKind kind;
     BuiltInType builtInType;
     u32 arrayCount;
     // TODO: Further resolve
@@ -264,7 +270,7 @@ TypeInfo* ResolveFieldType(CXType type)
         auto typeInfo = (TypeInfo*)malloc(sizeof(TypeInfo));
         memset(typeInfo, 0, sizeof(TypeInfo));
 
-        typeInfo->isBuiltIn = true;
+        typeInfo->kind = TypeKind::BuiltIn;
         typeInfo->builtInType = builtInType;
         return typeInfo;
     }
@@ -274,7 +280,7 @@ TypeInfo* ResolveFieldType(CXType type)
         auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
         memset(typeInfo, 0, sizeof(TypeInfo));
 
-        typeInfo->isPointer = true;
+        typeInfo->kind = TypeKind::Pointer;
 
         CXType pointeeType = clang_getPointeeType(type);
 
@@ -292,7 +298,7 @@ TypeInfo* ResolveFieldType(CXType type)
 
         CXType elementType = clang_getArrayElementType(type);
 
-        typeInfo->isArray = true;
+        typeInfo->kind = TypeKind::Array;
         typeInfo->arrayCount = (u32)arraySize;
         typeInfo->underlyingType = ResolveFieldType(elementType);
         return typeInfo;
@@ -312,7 +318,7 @@ TypeInfo* ResolveFieldType(CXType type)
         CXString typeSpelling = clang_getTypeSpelling(type);
         const char* typeSpellingStr = clang_getCString(typeSpelling);
 
-        typeInfo->isStruct = true;
+        typeInfo->kind = TypeKind::Struct;
         typeInfo->structName = typeSpellingStr;
         return typeInfo;
     }
@@ -331,7 +337,7 @@ TypeInfo* ResolveFieldType(CXType type)
         CXString typeSpelling = clang_getTypeSpelling(type);
         const char *typeSpellingStr = clang_getCString(typeSpelling);
 
-        typeInfo->isEnum = true;
+        typeInfo->kind = TypeKind::Enum;
         typeInfo->enumName = typeSpellingStr;
         return typeInfo;
     }
@@ -513,25 +519,25 @@ void OutputTypeInfo(TypeInfo* info)
         return;
     }
 
-    if (info->isBuiltIn)
+    if (info->kind == TypeKind::BuiltIn)
     {
         LogPrint("%s ", ToString(info->builtInType));
     }
-    else if (info->isPointer)
+    else if (info->kind == TypeKind::Pointer)
     {
         LogPrint("* ");
         OutputTypeInfo(info->underlyingType);
     }
-    else if (info->isArray)
+    else if (info->kind == TypeKind::Array)
     {
         LogPrint("[%lu] ", info->arrayCount);
         OutputTypeInfo(info->underlyingType);
     }
-    else if (info->isStruct)
+    else if (info->kind == TypeKind::Struct)
     {
         LogPrint("%s ", info->structName);
     }
-    else if (info->isEnum)
+    else if (info->kind == TypeKind::Enum)
     {
         LogPrint("%s ", info->enumName);
     }
@@ -621,6 +627,107 @@ CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData client
     return CXChildVisit_Continue;
 }
 
+void SerializeType(TypeInfo* info, void(*outputProc)(const char* fmt, ...))
+{
+    if (!info)
+    {
+        return;
+    }
+
+    switch (info->kind)
+    {
+        case TypeKind::Unknown:
+        {
+            outputProc(" <unknown>");
+        } break;
+
+        case TypeKind::BuiltIn:
+        {
+            outputProc(" %s", ToString(info->builtInType));
+        } break;
+
+        case TypeKind::Pointer:
+        {
+            outputProc(" *");
+            SerializeType(info->underlyingType, outputProc);
+        } break;
+
+        case TypeKind::Array:
+        {
+            outputProc(" [%lu]", info->arrayCount);
+            SerializeType(info->underlyingType, outputProc);
+        } break;
+
+        case TypeKind::Struct:
+        {
+            outputProc(" %s", info->structName);
+        } break;
+
+        case TypeKind::Enum:
+        {
+            outputProc(" %s", info->enumName);
+        } break;
+    }
+}
+
+void SerializeAst(AstNode* node, u32 level, void(*outputProc)(const char* fmt, ...))
+{
+    for (u32 i = 0; i < level; i++)
+    {
+        outputProc("%c", '-');
+    }
+
+    outputProc(" %s", ToString(node->type));
+
+    switch (node->type)
+    {
+        case AstNodeType::Enum:
+        {
+            auto data = (EnumData*)node->data;
+            outputProc(" %s %s", data->name, ToString(data->underlyingType));
+        } break;
+
+        case AstNodeType::EnumConstant:
+        {
+            auto data = (EnumConstantData*)node->data;
+            outputProc(" %s sValue: %ld uValue: %lu", data->name, data->signedValue, data->unsignedValue);
+        } break;
+
+        case AstNodeType::Struct:
+        {
+            auto data = (StructData*)node->data;
+            outputProc(" %s size: %lu align: %lu", data->name, data->size, data->align);
+        } break;
+
+        case AstNodeType::Field:
+        {
+            auto data = (FieldData*)node->data;
+            outputProc(" %s offset: %lu, type:", data->name, data->offset);
+            SerializeType(data->typeInfo, outputProc);
+        } break;
+    }
+
+    outputProc("\n");
+
+    for (auto& child : node->children)
+    {
+        SerializeAst(&child, level + 1, outputProc);
+    }
+}
+
+void SerializeAst(AstNode* node, void(*outputProc)(const char* fmt, ...))
+{
+    SerializeAst(node, 0, outputProc);
+}
+
+void AstOutputProc(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+}
+
 int main(int argc, char** argv)
 {
     CXIndex index = clang_createIndex(0, 1);
@@ -642,7 +749,9 @@ int main(int argc, char** argv)
 
     clang_visitChildren(rootCursor, AttributesVisitor, &data);
 
-    VisitAst(&data.rootNode);
+    SerializeAst(&data.rootNode, AstOutputProc);
+
+    //VisitAst(&data.rootNode);
 
     return 0;
 }
