@@ -18,6 +18,8 @@ set CommonLinkerFlags=/INCREMENTAL:NO /OPT:REF /MACHINE:X64 /OUT:%BinOutDir%\%Ou
 
 cl /MP /W3 /Fo%ObjOutDir% %CommonDefines% /I%ClReflectIncludeDirectory% %CommonCompilerFlags% src/Main.cpp /link %CommonLinkerFlags%
 
+cl /MP /W3 /Fo%ObjOutDir% %CommonCompilerFlags% src/Metaprogram.cpp /link /INCREMENTAL:NO /OPT:REF /MACHINE:X64 /DLL /EXPORT:Metaprogram /OUT:%BinOutDir%\Metaprogram.dll /PDB:%BinOutDir%\Metaprogram.pdb
+
 rmdir /S /Q %ObjOutDir%
 del build\%OutName%.exp >NUL 2>&1
 del build\%OutName%.lib >NUL 2>&1
