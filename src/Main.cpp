@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <io.h>
+#include <fcntl.h>
 
 #include <vector>
 #include <unordered_map>
@@ -436,10 +438,6 @@ CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData 
         Assert(offset >= 0);
 
         CXType type = clang_getCursorType(cursor);
-        CXString spelling = clang_getTypeKindSpelling(type.kind);
-        const char *spellingStr = clang_getCString(spelling);
-
-        LogPrint("Field %s type: %s\n", nameStr, spellingStr);
 
         TypeInfo* typeInfo = ResolveFieldType(type, data);
 
@@ -531,47 +529,6 @@ bool CallMetaprogram(AstNode* root, const char* moduleName, const char* procName
 }
 #endif
 
-#include <string>
-#include <iostream>
-
-std::string getCursorKindName( CXCursorKind cursorKind )
-{
-  CXString kindName  = clang_getCursorKindSpelling( cursorKind );
-  std::string result = clang_getCString( kindName );
-
-  clang_disposeString( kindName );
-  return result;
-}
-
-std::string getCursorSpelling( CXCursor cursor )
-{
-  CXString cursorSpelling = clang_getCursorSpelling( cursor );
-  std::string result      = clang_getCString( cursorSpelling );
-
-  clang_disposeString( cursorSpelling );
-  return result;
-}
-
-CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData clientData)
-{
-    CXSourceLocation location = clang_getCursorLocation(cursor);
-    if (clang_Location_isFromMainFile(location) == 0)
-        return CXChildVisit_Continue;
-
-    CXCursorKind cursorKind = clang_getCursorKind(cursor);
-
-    unsigned int curLevel = *(reinterpret_cast<unsigned int *>(clientData));
-    unsigned int nextLevel = curLevel + 1;
-
-    std::cout << std::string(curLevel, '-') << " " << getCursorKindName(cursorKind) << " (" << getCursorSpelling(cursor) << ")\n";
-
-    clang_visitChildren(cursor,
-                        DumpAst,
-                        &nextLevel);
-
-    return CXChildVisit_Continue;
-}
-
 int main(int argc, char** argv)
 {
     int compilerArgsCount = argc;
@@ -627,10 +584,57 @@ int main(int argc, char** argv)
         return -1;
     }
 
+    // NOTE: I didn't find any way to check if translation unit has errors.
+    // So the solution is to redirect stderr to pipe and then read from that pipe
+    // If it contains anything, then we have errors.
+
+    // Opening pipe and redirecting stderr to it.
+    int fd[2];
+    // Create pipe
+    _pipe(fd, 512 * 1024, O_BINARY);
+    // Open file for reading from pipe
+    FILE* readFile = _fdopen(fd[0], "rb");
+    // Save current stderr descriptor
+    int stderrCopy = _dup(_fileno(stderr));
+    // Replace stderr with pipe
+    _dup2(fd[1], _fileno(stderr));
+
     CXIndex index = clang_createIndex(0, 1);
     Assert(index);
     CXTranslationUnit unit = nullptr;
-    CXErrorCode resultTr = clang_parseTranslationUnit2FullArgv(index, nullptr, argv, argc, 0, 0, CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_DetailedPreprocessingRecord, &unit);
+    CXErrorCode resultTr = clang_parseTranslationUnit2FullArgv(index, nullptr, compilerArgsPtr, compilerArgsCount, 0, 0, CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_DetailedPreprocessingRecord, &unit);
+
+    // Redirect stderr back to where it was.
+    // Close writing pipe. That way we will be able to correctly read from read file.
+    _close(fd[1]);
+    // Retstore stderr
+    _dup2(stderrCopy, _fileno(stderr));
+    _close(stderrCopy);
+
+    bool hasErrors = false;
+
+    // Dump pipe contents back to stderr and check if we have errors.
+    char buffer[1024];
+    while (!feof(readFile))
+    {
+        if (fgets(buffer, 1024, readFile) == NULL)
+        {
+            break;
+        }
+
+        fputs(buffer, stderr);
+        hasErrors = true;
+    }
+
+    if (hasErrors)
+    {
+        // Set text color to red
+        LogPrint("\033[0;31m");
+        LogPrint("Translation unit contains errors. Metaprogram will not be executed.\n");
+        // Reset text color
+        LogPrint("\033[0m");
+        return -1;
+    }
 
     CXCursor rootCursor = clang_getTranslationUnitCursor(unit);
 
@@ -653,5 +657,44 @@ int main(int argc, char** argv)
 }
 
 #if false
+#include <string>
+#include <iostream>
 
+std::string getCursorKindName( CXCursorKind cursorKind )
+{
+  CXString kindName  = clang_getCursorKindSpelling( cursorKind );
+  std::string result = clang_getCString( kindName );
+
+  clang_disposeString( kindName );
+  return result;
+}
+
+std::string getCursorSpelling( CXCursor cursor )
+{
+  CXString cursorSpelling = clang_getCursorSpelling( cursor );
+  std::string result      = clang_getCString( cursorSpelling );
+
+  clang_disposeString( cursorSpelling );
+  return result;
+}
+
+CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData clientData)
+{
+    CXSourceLocation location = clang_getCursorLocation(cursor);
+    if (clang_Location_isFromMainFile(location) == 0)
+        return CXChildVisit_Continue;
+
+    CXCursorKind cursorKind = clang_getCursorKind(cursor);
+
+    unsigned int curLevel = *(reinterpret_cast<unsigned int *>(clientData));
+    unsigned int nextLevel = curLevel + 1;
+
+    std::cout << std::string(curLevel, '-') << " " << getCursorKindName(cursorKind) << " (" << getCursorSpelling(cursor) << ")\n";
+
+    clang_visitChildren(cursor,
+                        DumpAst,
+                        &nextLevel);
+
+    return CXChildVisit_Continue;
+}
 #endif
