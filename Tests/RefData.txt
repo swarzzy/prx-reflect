@@ -1,0 +1,49 @@
+Root
+- Enum EnumNoTypedef SignedLong anonymous: false
+-- EnumConstant Boo sValue: 0 uValue: 0
+-- EnumConstant Bar sValue: 1 uValue: 1
+- Enum EnumWithTypedef SignedLong anonymous: false
+-- EnumConstant Boo2 sValue: -1 uValue: 4294967295
+-- EnumConstant Bar2 sValue: 1 uValue: 1
+- Struct TestFields size: 184 align: 8 anonymous: false
+-- Field signedShortInt offset: 0, type: SignedShort
+-- Field unsignedLongInt offset: 32, type: UnsignedLong
+-- Field signedLongInt offset: 64, type: SignedLong
+-- Field signedChar offset: 96, type: SignedChar
+-- Field justChar offset: 104, type: Char
+-- Field charSigned offset: 112, type: SignedChar
+-- Field unsignedChar offset: 120, type: UnsignedChar
+-- Field charUnsigned offset: 128, type: UnsignedChar
+-- Field intPtr offset: 192, type: * SignedInt
+-- Field intPtrPtr offset: 256, type: * * SignedInt
+-- Field intPtrArray offset: 320, type: [10] * SignedInt
+-- Field intArray offset: 960, type: [11] SignedInt
+-- Field u32Typedef offset: 1312, type: UnsignedInt
+-- Field functionNoProto offset: 1344, type: * FunctionProto
+-- Field functionProto offset: 1408, type: * FunctionProto
+-- Field arrayUnknownSize offset: 1472, type: [] SignedInt
+- Struct StructWithoutTypedef size: 8 align: 4 anonymous: false
+-- Field a offset: 0, type: SignedInt
+-- Field b offset: 32, type: Float
+- Struct StructWithTypedef size: 8 align: 4 anonymous: false
+-- Field a offset: 0, type: SignedInt
+-- Field b offset: 32, type: Float
+- Struct _NamedStructWithTypedef size: 8 align: 4 anonymous: false
+-- Field a offset: 0, type: SignedInt
+-- Field b offset: 32, type: Float
+- Struct StructDefinesTest size: 32 align: 4 anonymous: false
+-- Field structWithoutTypedef offset: 0, type: StructWithoutTypedef
+-- Field structWithTypedef offset: 64, type: StructWithTypedef
+-- Field namedStructWithTypedef offset: 128, type: _NamedStructWithTypedef
+-- Field _namedStructWithTypedef offset: 192, type: _NamedStructWithTypedef
+- Struct AnonymousNestedStructTest size: 12 align: 4 anonymous: false
+-- Struct struct AnonymousNestedStructTest::(anonymous at tests\Test.c:69:5) size: 8 align: 4 anonymous: true
+--- Field a offset: 0, type: SignedInt
+--- Field c offset: 32, type: Float
+-- Field foo offset: 0, type: struct AnonymousNestedStructTest::(anonymous at tests\Test.c:69:5)
+-- Field bar offset: 64, type: SignedInt
+- Struct AnonymousEnumStructTest size: 4 align: 4 anonymous: false
+-- Enum enum AnonymousEnumStructTest::(anonymous at tests\Test.c:79:5) SignedInt anonymous: true
+--- EnumConstant A sValue: 0 uValue: 0
+--- EnumConstant B sValue: 1 uValue: 1
+-- Field anonumousEnum offset: 0, type: enum AnonymousEnumStructTest::(anonymous at tests\Test.c:79:5)

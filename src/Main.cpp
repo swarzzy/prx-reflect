@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 #include <vector>
-#include <unordered_set>
+#include <unordered_map>
 
 #include "CommonDefines.h"
 #include "Common.h"
@@ -37,7 +37,7 @@ void* GlobalAssertHandlerData = nullptr;
 struct VisitorData
 {
     std::vector<AstNode*> stack;
-    std::unordered_set<std::string> processedTypes;
+    std::unordered_map<std::string, AstNode*> typesTable;
     AstNode rootNode;
 };
 
@@ -66,13 +66,10 @@ BuiltInType ClangTypeToBuiltIn(CXTypeKind clangType)
     case CXType_ULong: return BuiltInType_UnsignedLong;
     case CXType_LongLong: return BuiltInType_SignedLongLong;
     case CXType_ULongLong: return BuiltInType_UnsignedLongLong;
-    // nocheckin Check these
     case CXType_SChar: return BuiltInType_SignedChar;
-    case CXType_Char_S: return BuiltInType_SignedChar;
+    case CXType_Char_S: return BuiltInType_Char;
     case CXType_UChar: return BuiltInType_UnsignedChar;
-    case CXType_Char_U: return BuiltInType_UnsignedChar;
-    //case CXType_SChar: return BuiltInType_Char8;
-
+    case CXType_Char_U: return BuiltInType_Char;
     case CXType_Bool: return BuiltInType_Bool;
     case CXType_Char16: return BuiltInType_Char16;
     case CXType_Char32: return BuiltInType_Char32;
@@ -86,13 +83,13 @@ BuiltInType ClangTypeToBuiltIn(CXTypeKind clangType)
 
 AstNode* PushNewChild(VisitorData* data)
 {
-    AstNode *children = data->stack.back()->children;
-    auto childrenVector = (std::vector<AstNode> *)children;
+    AstNode** children = data->stack.back()->children;
+    auto childrenVector = (std::vector<AstNode*>*)children;
 
-    childrenVector->push_back(AstNode());
+    auto node = (AstNode*)malloc(sizeof(AstNode));
+    memset(node, 0, sizeof(AstNode));
 
-    AstNode* node = &childrenVector->back();
-
+    childrenVector->push_back(node);
     data->stack.push_back(node);
     return node;
 }
@@ -100,6 +97,72 @@ AstNode* PushNewChild(VisitorData* data)
 void PopNode(VisitorData* data)
 {
     data->stack.pop_back();
+}
+
+bool IsSpace(char c) 
+{
+    bool result = false;
+
+    if (c == ' ' || c == '\f' || c == '\n' || c == '\r' || c == '\t' || c == '\v') 
+    {
+        result = true;
+    }
+
+    return result;
+}
+
+bool IsAnonymousType(const char* spelling)
+{
+    // Hack
+    return strstr(spelling, "anonymous at");
+}
+
+const char* ExtractTypeName(const char* string)
+{
+    if (IsAnonymousType(string))
+    {
+        return string;
+    }
+
+    const char* lastWordPosition = string;
+
+    string++;
+
+    while (*string != 0)
+    {
+        if (!IsSpace(*string) && IsSpace(*(string - 1)))
+        {
+            lastWordPosition = string;
+        }
+
+        string++;
+    }
+
+    return lastWordPosition;
+}
+
+bool CheckTypeIsAlreadyProcessed(VisitorData* data, const char* name)
+{
+    auto it = data->typesTable.find(std::string(name));
+    return it != data->typesTable.end();
+}
+
+AstNode* TryFindProcessedType(VisitorData* data, const char* name)
+{
+    AstNode* result = nullptr;
+
+    auto it = data->typesTable.find(std::string(name));
+    if (it != data->typesTable.end())
+    {
+        result = it->second;
+    }
+
+    return result;
+}
+
+void RegisterProcessedType(VisitorData* data, const char* name, AstNode* typeNode)
+{
+    data->typesTable[std::string(name)] = typeNode;
 }
 
 CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
@@ -134,7 +197,7 @@ CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _d
     return CXChildVisit_Continue;
 }
 
-TypeInfo* ResolveFieldType(CXType type)
+TypeInfo* ResolveFieldType(CXType type, VisitorData* data)
 {
     BuiltInType builtInType = ClangTypeToBuiltIn(type.kind);
 
@@ -157,65 +220,200 @@ TypeInfo* ResolveFieldType(CXType type)
 
         CXType pointeeType = clang_getPointeeType(type);
 
-        typeInfo->underlyingType = ResolveFieldType(pointeeType);
+        typeInfo->underlyingType = ResolveFieldType(pointeeType, data);
         return typeInfo;
     }
 
-    if (type.kind == CXType_ConstantArray)
+    // Proto is the function with parameters, NoProto - has no parameters.
+    if (type.kind == CXType_FunctionProto || type.kind == CXType_FunctionNoProto)
     {
         auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
         memset(typeInfo, 0, sizeof(TypeInfo));
 
-        long long arraySize = clang_getArraySize(type);
-        Assert(arraySize >= 0);
+        typeInfo->kind = TypeKind_FunctionProto;
+        return typeInfo;
+    }
+
+    if (type.kind == CXType_ConstantArray ||
+        type.kind == CXType_IncompleteArray)
+    {
+        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
+        memset(typeInfo, 0, sizeof(TypeInfo));
 
         CXType elementType = clang_getArrayElementType(type);
 
         typeInfo->kind = TypeKind_Array;
-        typeInfo->arrayCount = (u32)arraySize;
-        typeInfo->underlyingType = ResolveFieldType(elementType);
+
+        if (type.kind == CXType_ConstantArray)
+        {
+            long long arraySize = clang_getArraySize(type);
+            Assert(arraySize >= 0);
+
+            typeInfo->arrayHasSize = true;
+            typeInfo->arrayCount = (u32)arraySize;
+        }
+        else
+        {
+            typeInfo->arrayHasSize = false;
+        }
+
+        typeInfo->underlyingType = ResolveFieldType(elementType, data);
         return typeInfo;
     }
 
     if (type.kind == CXType_Typedef)
     {
         CXType actualType = clang_getCanonicalType(type);
-        return ResolveFieldType(actualType);
+        return ResolveFieldType(actualType, data);
     }
 
-    if (type.kind == CXType_Record)
-    {
-        auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
-        memset(typeInfo, 0, sizeof(TypeInfo));
-
-        CXString typeSpelling = clang_getTypeSpelling(type);
-        const char* typeSpellingStr = clang_getCString(typeSpelling);
-
-        typeInfo->kind = TypeKind_Struct;
-        typeInfo->structName = typeSpellingStr;
-        return typeInfo;
-    }
-
-    if (type.kind == CXType_Elaborated)
-    {
-        CXType actualType = clang_Type_getNamedType(type);
-        return ResolveFieldType(actualType);
-    }
-
-    if (type.kind == CXType_Enum)
+    if (type.kind == CXType_Record || type.kind == CXType_Enum)
     {
         auto typeInfo = (TypeInfo *)malloc(sizeof(TypeInfo));
         memset(typeInfo, 0, sizeof(TypeInfo));
 
         CXString typeSpelling = clang_getTypeSpelling(type);
         const char *typeSpellingStr = clang_getCString(typeSpelling);
+        const char *typeName = ExtractTypeName(typeSpellingStr);
 
-        typeInfo->kind = TypeKind_Enum;
-        typeInfo->enumName = typeSpellingStr;
+        AstNode* typeNode = TryFindProcessedType(data, typeName);
+
+        if (typeNode != nullptr)
+        {
+            typeInfo->kind = type.kind == CXType_Record ? TypeKind_Struct : TypeKind_Enum;
+            typeInfo->resolvedTypeNode = typeNode;
+            clang_disposeString(typeSpelling);
+        }
+        else
+        {
+            typeInfo->kind = TypeKind_Unresolved;
+            typeInfo->unresolvedTypeName = typeName;
+        }
+
         return typeInfo;
     }
 
+    if (type.kind == CXType_Elaborated)
+    {
+        CXType actualType = clang_Type_getNamedType(type);
+        return ResolveFieldType(actualType, data);
+    }
+
     return nullptr;
+}
+
+void MakeChildrenVector(AstNode* node)
+{
+    // Put vector in children array pointer. We will collect children here
+    node->children = (AstNode**)(new std::vector<AstNode*>());
+}
+
+void ConvertChildrenVectorToArray(AstNode* node)
+{
+    // Convert children vector to plain array
+    auto childrenVector = (std::vector<AstNode*>*)node->children;
+    u32 childrenCount = (u32)childrenVector->size();
+    u32 arraySize = sizeof(AstNode*) * childrenCount;
+
+    node->children = (AstNode**)malloc(arraySize);
+    node->childrenCount = (u32)childrenCount;
+    memcpy(node->children, childrenVector->data(), arraySize);
+    delete childrenVector;
+}
+
+CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData _data);
+
+void TypeVisitor(CXCursor cursor, VisitorData* data)
+{
+    CXCursorKind kind = clang_getCursorKind(cursor);
+
+    switch (kind)
+    {
+    case CXCursor_EnumDecl:
+    {
+        if (!clang_isCursorDefinition(cursor))
+        {
+            break;
+        }
+
+        CXType type = clang_getCursorType(cursor);
+        CXString spelling = clang_getTypeSpelling(type);
+        const char *spellingStr = clang_getCString(spelling);
+        bool anonymous = IsAnonymousType(spellingStr);
+        const char *typeName = ExtractTypeName(spellingStr);
+
+        if (CheckTypeIsAlreadyProcessed(data, spellingStr))
+        {
+            clang_disposeString(spelling);
+            break;
+        }
+
+        auto node = PushNewChild(data);
+        node->type = AstNodeType_Enum;
+
+        RegisterProcessedType(data, spellingStr, node);
+
+        MakeChildrenVector(node);
+
+        CXType clangUnderlyingType = clang_getEnumDeclIntegerType(cursor);
+        BuiltInType buildInType = ClangTypeToBuiltIn(clangUnderlyingType.kind);
+
+        auto nodeData = (EnumData *)malloc(sizeof(EnumData));
+        nodeData->name = typeName;
+        nodeData->underlyingType = buildInType;
+        nodeData->anonymous = anonymous;
+        node->data = nodeData;
+
+        clang_visitChildren(cursor, EnumVisitor, data);
+
+        ConvertChildrenVectorToArray(node);
+
+        PopNode(data);
+    } break;
+
+    case CXCursor_StructDecl:
+    {
+        if (!clang_isCursorDefinition(cursor))
+        {
+            break;
+        }
+
+        CXType type = clang_getCursorType(cursor);
+        CXString spelling = clang_getTypeSpelling(type);
+        const char *spellingStr = clang_getCString(spelling);
+        bool anonymous = IsAnonymousType(spellingStr);
+        const char *typeName = ExtractTypeName(spellingStr);
+
+        if (CheckTypeIsAlreadyProcessed(data, typeName))
+        {
+            clang_disposeString(spelling);
+            break;
+        }
+
+        auto node = PushNewChild(data);
+        node->type = AstNodeType_Struct;
+
+        RegisterProcessedType(data, typeName, node);
+
+        MakeChildrenVector(node);
+
+        auto nodeData = (StructData *)malloc(sizeof(StructData));
+        nodeData->name = typeName;
+        nodeData->size = (u32)clang_Type_getSizeOf(type);
+        nodeData->align = (u32)clang_Type_getAlignOf(type);
+        nodeData->anonymous = anonymous;
+
+        node->data = nodeData;
+
+        clang_visitChildren(cursor, StructVisitor, data);
+
+        ConvertChildrenVectorToArray(node);
+
+        PopNode(data);
+    } break;
+
+    default: { printf("Error: Invalid type.\n"); } break;
+    }
 }
 
 CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
@@ -238,13 +436,22 @@ CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData 
         Assert(offset >= 0);
 
         CXType type = clang_getCursorType(cursor);
-        TypeInfo* typeInfo = ResolveFieldType(type);
+        CXString spelling = clang_getTypeKindSpelling(type.kind);
+        const char *spellingStr = clang_getCString(spelling);
+
+        LogPrint("Field %s type: %s\n", nameStr, spellingStr);
+
+        TypeInfo* typeInfo = ResolveFieldType(type, data);
 
         nodeData->name = nameStr;
         nodeData->offset = (u32)offset;
         nodeData->typeInfo = typeInfo;
 
         PopNode(data);
+    }
+    else if (kind == CXCursor_StructDecl || kind == CXCursor_EnumDecl)
+    {
+        TypeVisitor(cursor, data);
     }
     else if (kind != CXCursor_AnnotateAttr &&
              kind != CXCursor_StructDecl &&
@@ -281,36 +488,6 @@ bool CheckMetaprogramVisibility(CXCursor attribCursor)
     return visible;
 }
 
-bool CheckTypeIsAlreadyProcessed(VisitorData* data, const char* name)
-{
-    auto it = data->processedTypes.find(std::string(name));
-    return it != data->processedTypes.end();
-}
-
-void MarkTypeAsProcessed(VisitorData* data, const char* name)
-{
-    data->processedTypes.insert(std::string(name));
-}
-
-void MakeChildrenVector(AstNode* node)
-{
-    // Put vector in children array pointer. We will collect children here
-    node->children = (AstNode *)(new std::vector<AstNode>());
-}
-
-void ConvertChildrenVectorToArray(AstNode* node)
-{
-    // Convert children vector to plain array
-    auto childrenVector = (std::vector<AstNode> *)node->children;
-    u32 childrenCount = (u32)childrenVector->size();
-    u32 arraySize = sizeof(AstNode) * childrenCount;
-
-    node->children = (AstNode *)malloc(arraySize);
-    node->childrenCount = (u32)childrenCount;
-    memcpy(node->children, childrenVector->data(), arraySize);
-    delete childrenVector;
-}
-
 CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
 {
     auto data = (VisitorData*)_data;
@@ -320,94 +497,7 @@ CXChildVisitResult AttributesVisitor(CXCursor cursor, CXCursor parent, CXClientD
 
     if (kind == CXCursor_AnnotateAttr && CheckMetaprogramVisibility(cursor))
     {
-        ASTAttribEntry entry;
-        entry.parent = parent;
-        entry.attrib = cursor;
-
-        switch (parentKind)
-        {
-            case CXCursor_EnumDecl:
-            {
-                Assert(data->stack.back() = &(data->rootNode));
-
-                if (!clang_isCursorDefinition(parent))
-                {
-                    break;
-                }
-
-                CXString spelling = clang_getCursorSpelling(parent);
-                const char *spellingStr = clang_getCString(spelling);
-
-                if (CheckTypeIsAlreadyProcessed(data, spellingStr))
-                {
-                    clang_disposeString(spelling);
-                    break;
-                }
-
-                MarkTypeAsProcessed(data, spellingStr);
-
-                auto node = PushNewChild(data);
-                node->type = AstNodeType_Enum;
-
-                MakeChildrenVector(node);
-
-                CXType clangUnderlyingType = clang_getEnumDeclIntegerType(parent);
-                BuiltInType type = ClangTypeToBuiltIn(clangUnderlyingType.kind);
-
-                auto nodeData = (EnumData*)malloc(sizeof(EnumData));
-                nodeData->name = spellingStr;
-                nodeData->underlyingType = type;
-                node->data = nodeData;
-
-                clang_visitChildren(parent, EnumVisitor, data);
-
-                ConvertChildrenVectorToArray(node);
-
-                PopNode(data);
-            } break;
-
-            case CXCursor_StructDecl:
-            {
-                Assert(data->stack.back() = &(data->rootNode));
-
-                if (!clang_isCursorDefinition(parent))
-                {
-                    break;
-                }
-
-                CXType type = clang_getCursorType(parent);
-                CXString spelling = clang_getTypeSpelling(type);
-                const char *spellingStr = clang_getCString(spelling);
-
-                if (CheckTypeIsAlreadyProcessed(data, spellingStr))
-                {
-                    clang_disposeString(spelling);
-                    break;
-                }
-
-                MarkTypeAsProcessed(data, spellingStr);
-
-                auto node = PushNewChild(data);
-                node->type = AstNodeType_Struct;
-
-                MakeChildrenVector(node);
-
-                auto nodeData = (StructData *)malloc(sizeof(StructData));
-                nodeData->name = spellingStr;
-                nodeData->size = (u32)clang_Type_getSizeOf(type);
-                nodeData->align = (u32)clang_Type_getAlignOf(type);
-
-                node->data = nodeData;
-
-                clang_visitChildren(parent, StructVisitor, data);
-
-                ConvertChildrenVectorToArray(node);
-
-                PopNode(data);
-            } break;
-
-            default: { printf("Error: Found annotation at invalid location.\n"); } break;
-        }
+        TypeVisitor(parent, data);
     }
 
     return CXChildVisit_Recurse;
@@ -440,6 +530,47 @@ bool CallMetaprogram(AstNode* root, const char* moduleName, const char* procName
     return true;
 }
 #endif
+
+#include <string>
+#include <iostream>
+
+std::string getCursorKindName( CXCursorKind cursorKind )
+{
+  CXString kindName  = clang_getCursorKindSpelling( cursorKind );
+  std::string result = clang_getCString( kindName );
+
+  clang_disposeString( kindName );
+  return result;
+}
+
+std::string getCursorSpelling( CXCursor cursor )
+{
+  CXString cursorSpelling = clang_getCursorSpelling( cursor );
+  std::string result      = clang_getCString( cursorSpelling );
+
+  clang_disposeString( cursorSpelling );
+  return result;
+}
+
+CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData clientData)
+{
+    CXSourceLocation location = clang_getCursorLocation(cursor);
+    if (clang_Location_isFromMainFile(location) == 0)
+        return CXChildVisit_Continue;
+
+    CXCursorKind cursorKind = clang_getCursorKind(cursor);
+
+    unsigned int curLevel = *(reinterpret_cast<unsigned int *>(clientData));
+    unsigned int nextLevel = curLevel + 1;
+
+    std::cout << std::string(curLevel, '-') << " " << getCursorKindName(cursorKind) << " (" << getCursorSpelling(cursor) << ")\n";
+
+    clang_visitChildren(cursor,
+                        DumpAst,
+                        &nextLevel);
+
+    return CXChildVisit_Continue;
+}
 
 int main(int argc, char** argv)
 {
@@ -515,51 +646,12 @@ int main(int argc, char** argv)
 
     CallMetaprogram(&data.rootNode, moduleName, procName);
 
-    //VisitAst(&data.rootNode);
+    //unsigned int level = 0;
+    //clang_visitChildren(rootCursor, DumpAst, &level);
 
     return 0;
 }
 
 #if false
 
-#include <string>
-#include <iostream>
-
-std::string getCursorKindName( CXCursorKind cursorKind )
-{
-  CXString kindName  = clang_getCursorKindSpelling( cursorKind );
-  std::string result = clang_getCString( kindName );
-
-  clang_disposeString( kindName );
-  return result;
-}
-
-std::string getCursorSpelling( CXCursor cursor )
-{
-  CXString cursorSpelling = clang_getCursorSpelling( cursor );
-  std::string result      = clang_getCString( cursorSpelling );
-
-  clang_disposeString( cursorSpelling );
-  return result;
-}
-
-CXChildVisitResult DumpAst(CXCursor cursor, CXCursor parent, CXClientData clientData)
-{
-    CXSourceLocation location = clang_getCursorLocation(cursor);
-    if (clang_Location_isFromMainFile(location) == 0)
-        return CXChildVisit_Continue;
-
-    CXCursorKind cursorKind = clang_getCursorKind(cursor);
-
-    unsigned int curLevel = *(reinterpret_cast<unsigned int *>(clientData));
-    unsigned int nextLevel = curLevel + 1;
-
-    std::cout << std::string(curLevel, '-') << " " << getCursorKindName(cursorKind) << " (" << getCursorSpelling(cursor) << ")\n";
-
-    clang_visitChildren(cursor,
-                        DumpAst,
-                        &nextLevel);
-
-    return CXChildVisit_Continue;
-}
 #endif

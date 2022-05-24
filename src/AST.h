@@ -14,6 +14,7 @@ typedef enum
     BuiltInType_UnsignedLongLong,
     BuiltInType_SignedChar,
     BuiltInType_UnsignedChar,
+    BuiltInType_Char, // Just char is special
     BuiltInType_Bool,
     BuiltInType_Char8,
     BuiltInType_Char16,
@@ -38,9 +39,11 @@ typedef enum
     TypeKind_Unknown = 0,
     TypeKind_BuiltIn,
     TypeKind_Pointer,
+    TypeKind_FunctionProto,
     TypeKind_Array,
     TypeKind_Struct,
-    TypeKind_Enum
+    TypeKind_Enum,
+    TypeKind_Unresolved
 } TypeKind;
 
 typedef struct _AstNode
@@ -48,13 +51,14 @@ typedef struct _AstNode
     AstNodeType type;
     void* data;
     u32 childrenCount;
-    struct _AstNode* children;
+    struct _AstNode** children;
 } AstNode;
 
 typedef struct
 {
     const char* name;
     BuiltInType underlyingType;
+    bool anonymous;
 } EnumData;
 
 typedef struct
@@ -69,17 +73,17 @@ typedef struct
     const char* name;
     u32 size;
     u32 align;
+    bool anonymous;
 } StructData;
 
 typedef struct _TypeInfo
 {
     TypeKind kind;
     BuiltInType builtInType;
+    bool arrayHasSize;
     u32 arrayCount;
-    // TODO: Further resolve
-    const char* structName;
-    const char* enumName;
-    //BuiltInType enumUnderlyingType;
+    AstNode* resolvedTypeNode;
+    const char* unresolvedTypeName;
     struct _TypeInfo* underlyingType;
 } TypeInfo;
 
@@ -105,6 +109,7 @@ static const char* BuiltInType_Strings[] =
     "UnsignedLongLong",
     "SignedChar",
     "UnsignedChar",
+    "Char",
     "Bool",
     "Char8",
     "Char16",
@@ -129,7 +134,9 @@ static  const char* TypeKind_Strings[] =
     "Unknown",
     "BuiltIn",
     "Pointer",
+    "FunctionProto",
     "Array",
     "Struct",
-    "Enum"
+    "Enum",
+    "Unresolved",
 };
