@@ -39,6 +39,7 @@ void* GlobalAssertHandlerData = nullptr;
 struct VisitorData
 {
     std::vector<AstNode*> stack;
+    std::vector<const char*> attributesStack;
     std::unordered_map<std::string, AstNode*> typesTable;
     AstNode rootNode;
 };
@@ -167,6 +168,63 @@ void RegisterProcessedType(VisitorData* data, const char* name, AstNode* typeNod
     data->typesTable[std::string(name)] = typeNode;
 }
 
+const char* TryExtractMetaprogramAttribute(CXCursor attribCursor)
+{
+    bool visible = false;
+    static const char *metaprogramKeyword = "__metaprogram";
+    static const int metaprogramKeywordSize = sizeof("__metaprogram");
+
+    CXString attribSpelling = clang_getCursorSpelling(attribCursor);
+    const char *attribSpellingStr = clang_getCString(attribSpelling);
+
+    const char *keyword = strstr(attribSpellingStr, metaprogramKeyword);
+    if (keyword)
+    {
+        keyword += metaprogramKeywordSize;
+        return keyword;
+    }
+
+    return nullptr;
+}
+
+CXChildVisitResult ChildAttrbutesVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
+{
+    auto data = (VisitorData*)_data;
+
+    CXCursorKind kind = clang_getCursorKind(cursor);
+    CXCursorKind parentKind = clang_getCursorKind(parent);
+
+    if (kind == CXCursor_AnnotateAttr)
+    {
+        const char* attributeString = TryExtractMetaprogramAttribute(cursor);
+        if (attributeString)
+        {
+            data->attributesStack.push_back(attributeString);
+        }
+    }
+
+    return CXChildVisit_Continue;
+}
+
+void ExtractAttributes(CXCursor cursor, VisitorData* data, AttributeData** outAttrbutes, u32* outAttrbutesCount)
+{
+    *outAttrbutes = nullptr;
+    *outAttrbutesCount = 0;
+
+    data->attributesStack.clear();
+    clang_visitChildren(cursor, ChildAttrbutesVisitor, data);
+
+    if (data->attributesStack.size())
+    {
+        *outAttrbutesCount = (u32)data->attributesStack.size();
+        *outAttrbutes = (AttributeData *)malloc(sizeof(AttributeData) * *outAttrbutesCount);
+        for (u32 i = 0; i < *outAttrbutesCount; i++)
+        {
+            (*outAttrbutes)[i].attributeString = data->attributesStack[i];
+        }
+    }
+}
+
 CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _data)
 {
     auto data = (VisitorData*)_data;
@@ -188,6 +246,8 @@ CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _d
         nodeData->name = nameStr;
         nodeData->signedValue = sValue;
         nodeData->unsignedValue = uValue;
+
+        ExtractAttributes(cursor, data, &nodeData->attributes, &nodeData->attributesCount);
 
         PopNode(data);
     }
@@ -365,6 +425,8 @@ void TypeVisitor(CXCursor cursor, VisitorData* data)
         nodeData->underlyingType = buildInType;
         nodeData->anonymous = anonymous;
         node->data = nodeData;
+
+        ExtractAttributes(cursor, data, &nodeData->attributes, &nodeData->attributesCount);
 
         clang_visitChildren(cursor, EnumVisitor, data);
 

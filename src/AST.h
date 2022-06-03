@@ -56,9 +56,16 @@ typedef struct _AstNode
 
 typedef struct
 {
+    const char* attributeString;
+} AttributeData;
+
+typedef struct
+{
     const char* name;
     BuiltInType underlyingType;
     bool anonymous;
+    u32 attributesCount;
+    AttributeData* attributes;
 } EnumData;
 
 typedef struct
@@ -66,6 +73,8 @@ typedef struct
     const char* name;
     signed long long signedValue;
     unsigned long long unsignedValue;
+    u32 attributesCount;
+    AttributeData *attributes;
 } EnumConstantData;
 
 typedef struct
