@@ -206,6 +206,250 @@ CXChildVisitResult ChildAttrbutesVisitor(CXCursor cursor, CXCursor parent, CXCli
     return CXChildVisit_Continue;
 }
 
+enum struct AttributeTokenType
+{
+    Error,
+    Identifier,
+    Number,
+    String,
+    OpenBrace,
+    CloseBrace,
+    Colon,
+    Comma,
+    End
+};
+
+static const char* AttributeTokenType_Strings[] =
+{
+    "Error",
+    "Identifier",
+    "Number",
+    "String",
+    "OpenBrace",
+    "CloseBrace",
+    "Colon",
+    "Comma",
+    "End"
+};
+
+struct AttributeToken
+{
+    AttributeTokenType type;
+    const char* str;
+    u32 length;
+    const char* errorPosition;
+};
+
+struct AttributesTokenizer
+{
+    const char* at;
+    std::vector<AttributeToken> tokens;
+};
+
+void EatSpace(AttributesTokenizer* tokenizer)
+{
+    while (*tokenizer->at && IsSpace(*tokenizer->at)) tokenizer->at++;
+}
+
+bool IsNumber(char c)
+{
+    bool result = c >= '0' && c <= '9';
+    return result;
+}
+
+bool IsAlpha(char c)
+{
+    bool result = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    return result;
+}
+
+bool IsSeparator(char c)
+{
+    bool result = c == ':' || c == ',' || c == '(' || c == ')' || c == '\"';
+    return result;
+}
+
+void TokenizeAttribute(AttributesTokenizer* tokenizer)
+{
+    while (true)
+    {
+        EatSpace(tokenizer);
+
+        if (*tokenizer->at == 0)
+        {
+            AttributeToken token = {};
+            token.type = AttributeTokenType::End;
+            tokenizer->tokens.push_back(token);
+            break;
+        }
+
+        if (*tokenizer->at == ',')
+        {
+            AttributeToken token = {};
+            token.type = AttributeTokenType::Comma;
+            token.str = tokenizer->at;
+            token.length = 1;
+            tokenizer->at++;
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        if (*tokenizer->at == ':')
+        {
+            AttributeToken token = {};
+            token.type = AttributeTokenType::Colon;
+            token.str = tokenizer->at;
+            token.length = 1;
+            tokenizer->at++;
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        if (*tokenizer->at == '(')
+        {
+            AttributeToken token = {};
+            token.type = AttributeTokenType::OpenBrace;
+            token.str = tokenizer->at;
+            token.length = 1;
+            tokenizer->at++;
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        if (*tokenizer->at == ')')
+        {
+            AttributeToken token = {};
+            token.type = AttributeTokenType::CloseBrace;
+            token.str = tokenizer->at;
+            token.length = 1;
+            tokenizer->at++;
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        // TODO: Recognize quotes with escape symbol.
+        if (*tokenizer->at == '\"')
+        {
+            tokenizer->at++;
+            auto begin = tokenizer->at;
+            while (*tokenizer->at && *tokenizer->at != '\"') tokenizer->at++;
+            if (*tokenizer->at != '\"')
+            {
+                static const char* error = "Unexpected end of string";
+                static u32 errorLength = (u32)strlen(error);
+
+                AttributeToken token = {};
+                token.type = AttributeTokenType::Error;
+                token.str = error;
+                token.length = errorLength;
+                token.errorPosition = begin - 1;
+                tokenizer->tokens.push_back(token);
+                break;
+            }
+
+            AttributeToken token = {};
+            token.type = AttributeTokenType::String;
+            token.str = begin;
+            token.length = (u32)((uptr)tokenizer->at - (uptr)begin);
+
+            tokenizer->at++;
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        if (IsNumber(*tokenizer->at))
+        {
+            auto begin = tokenizer->at;
+            bool isStillNumber = true;
+            while (*tokenizer->at && !IsSpace(*tokenizer->at) && !IsSeparator(*tokenizer->at))
+            {
+                if (!IsNumber(*tokenizer->at))
+                {
+                    isStillNumber = false;
+                }
+
+                tokenizer->at++;
+            }
+
+            AttributeToken token = {};
+
+            if (isStillNumber)
+            {
+                token.type = AttributeTokenType::Number;
+                token.str = begin;
+                token.length = (u32)((uptr)tokenizer->at - (uptr)begin);
+                tokenizer->tokens.push_back(token);
+            }
+            else
+            {
+                static const char* error = "Number contains non-digit characters";
+                static u32 errorLength = (u32)strlen(error);
+
+                token.type = AttributeTokenType::Error;
+                token.str = error;
+                token.length = errorLength;
+                token.errorPosition = begin;
+                tokenizer->tokens.push_back(token);
+
+                break;
+            }
+
+            continue;
+        }
+
+        if (IsAlpha(*tokenizer->at))
+        {
+            auto begin = tokenizer->at;
+            while (*tokenizer->at && (IsAlpha(*tokenizer->at) || IsNumber(*tokenizer->at))) tokenizer->at++;
+
+            AttributeToken token = {};
+            token.type = AttributeTokenType::Identifier;
+            token.str = begin;
+            token.length = (u32)((uptr)tokenizer->at - (uptr)begin);
+
+            tokenizer->tokens.push_back(token);
+            continue;
+        }
+
+        static const char* error = "Unexpected character";
+        static u32 errorLength = (u32)strlen(error);
+
+        AttributeToken token = {};
+        token.type = AttributeTokenType::Error;
+        token.str = error;
+        token.length = errorLength;
+        token.errorPosition = tokenizer->at;
+        tokenizer->tokens.push_back(token);
+
+        break;
+    }
+}
+
+void ParseAttribute(const char* attribString)
+{
+    AttributesTokenizer tokenizer = {};
+    tokenizer.at = attribString;
+    TokenizeAttribute(&tokenizer);
+
+    for (auto token : tokenizer.tokens)
+    {
+        if (token.type == AttributeTokenType::Error)
+        {
+            std::string temp(attribString);
+            auto pos = (uptr)token.errorPosition - (uptr)attribString;
+
+            // printf red color.
+            temp.insert(pos, "\033[0;31m|>\033[0m");
+
+            printf("Error: %.*s: %s\n", token.length, token.str, temp.c_str());
+        }
+        else
+        {
+            printf("%s\t%.*s\n", AttributeTokenType_Strings[(u32)token.type], token.length, token.str);
+        }
+    }
+}
+
 void ExtractAttributes(CXCursor cursor, VisitorData* data, AttributeData** outAttrbutes, u32* outAttrbutesCount)
 {
     *outAttrbutes = nullptr;
@@ -216,11 +460,13 @@ void ExtractAttributes(CXCursor cursor, VisitorData* data, AttributeData** outAt
 
     if (data->attributesStack.size())
     {
+
         *outAttrbutesCount = (u32)data->attributesStack.size();
         *outAttrbutes = (AttributeData *)malloc(sizeof(AttributeData) * *outAttrbutesCount);
         for (u32 i = 0; i < *outAttrbutesCount; i++)
         {
-            (*outAttrbutes)[i].attributeString = data->attributesStack[i];
+            ParseAttribute(data->attributesStack[i]);
+            //(*outAttrbutes)[i].attributeString = data->attributesStack[i];
         }
     }
 }
@@ -247,7 +493,7 @@ CXChildVisitResult EnumVisitor(CXCursor cursor, CXCursor parent, CXClientData _d
         nodeData->signedValue = sValue;
         nodeData->unsignedValue = uValue;
 
-        ExtractAttributes(cursor, data, &nodeData->attributes, &nodeData->attributesCount);
+        ExtractAttributes(cursor, data, &nodeData->attributes.attributes, &nodeData->attributes.attributesCount);
 
         PopNode(data);
     }
@@ -426,7 +672,7 @@ void TypeVisitor(CXCursor cursor, VisitorData* data)
         nodeData->anonymous = anonymous;
         node->data = nodeData;
 
-        ExtractAttributes(cursor, data, &nodeData->attributes, &nodeData->attributesCount);
+        ExtractAttributes(cursor, data, &nodeData->attributes.attributes, &nodeData->attributes.attributesCount);
 
         clang_visitChildren(cursor, EnumVisitor, data);
 
@@ -502,6 +748,8 @@ CXChildVisitResult StructVisitor(CXCursor cursor, CXCursor parent, CXClientData 
         CXType type = clang_getCursorType(cursor);
 
         TypeInfo* typeInfo = ResolveFieldType(type, data);
+
+        ExtractAttributes(cursor, data, &nodeData->attributes.attributes, &nodeData->attributes.attributesCount);
 
         nodeData->name = nameStr;
         nodeData->offset = (u32)offset;

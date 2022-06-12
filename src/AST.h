@@ -54,18 +54,44 @@ typedef struct _AstNode
     struct _AstNode** children;
 } AstNode;
 
+typedef enum
+{
+    AttributeParamType_String,
+    AttributeParamType_Bool,
+    AttributeParamType_Int,
+} AttributeParamType;
+
 typedef struct
 {
-    const char* attributeString;
+    AttributeParamType type;
+    const char* name;
+    union
+    {
+        const char* String;
+        i64 Int;
+        bool Bool;
+    } value;
+} AttributeParameter;
+
+typedef struct
+{
+    const char* attributeName;
+    u32 paramsCount;
+    AttributeParameter params;
 } AttributeData;
+
+typedef struct
+{
+    u32 attributesCount;
+    AttributeData* attributes;
+} AttributesList;
 
 typedef struct
 {
     const char* name;
     BuiltInType underlyingType;
     bool anonymous;
-    u32 attributesCount;
-    AttributeData* attributes;
+    AttributesList attributes;
 } EnumData;
 
 typedef struct
@@ -73,8 +99,7 @@ typedef struct
     const char* name;
     signed long long signedValue;
     unsigned long long unsignedValue;
-    u32 attributesCount;
-    AttributeData *attributes;
+    AttributesList attributes;
 } EnumConstantData;
 
 typedef struct
@@ -100,6 +125,7 @@ typedef struct
 {
     const char* name;
     u32 offset;
+    AttributesList attributes;
     TypeInfo* typeInfo;
 } FieldData;
 
