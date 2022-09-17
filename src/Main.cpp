@@ -425,29 +425,142 @@ void TokenizeAttribute(AttributesTokenizer* tokenizer)
     }
 }
 
-void ParseAttribute(const char* attribString)
+char* ExtractString(const char* str, u32 len)
 {
+    auto mem = (char*)malloc(len + 1);
+    memcpy(mem, str, len);
+    mem[len] = 0;
+    return mem;
+}
+
+bool ResolveAttributeParams(AttributeToken* tokens, u32 tokensCount, AttributeParameter** params, u32* paramsCount)
+{
+    u32 index = 0;
+    while (true)
+    {
+        if ((tokensCount - index) == 0) break;
+        if ((tokensCount - index) < 3)
+        {
+            LogPrint("Error: Unexpected end of attribute parameters list\n");
+            return false;
+        }
+
+        if (tokens[index + 0] == AttributeTokenType::Identifier &&
+            tokens[index + 1] == AttributeTokenType::Colon &&
+            (tokens[index + 2] == AttributeTokenType::Number ||
+             tokens[index + 2] == AttributeTokenType::String ||
+             tokens[index + 2] == AttributeTokenType::Bool))
+        {
+            // TODO: collect params here
+            auto param
+        }
+        else
+        {
+            LogPrint("Error: Unexpected end of attribute parameter syntax\n");
+            return false;
+        }
+    }
+}
+
+AttributeData* ResolveAttribute(AttributeToken* tokens, u32 tokensCount, const char* attributeString)
+{
+    assert(tokensCount > 1);
+
+    if (tokens[0].type == AttributeTokenType::Identifier)
+    {
+        // Identifier only attribute
+        if (tokens[1].type == AttributeTokenType::End)
+        {
+            auto data = (AttributeData*)malloc(sizeof(AttributeData));
+            memset(data, 0, sizeof(AttributeData));
+            data->attributeName = ExtractString(tokens[1].str, tokens[1].length);
+            return data;
+        }
+        // Identifier with params
+        else if (tokens[1].type == AttributeTokenType::OpenBrace)
+        {
+            u32 closingBraceIndex = 2;
+            while (tokens[closingBraceIndex] != AttributeTokenType::End || tokens[closingBraceIndex] != AttributeTokenType::CloseBrace)
+            {
+                closingBraceIndex++;
+            }
+
+            if (tokens[closingBraceIndex] == AttributeTokenType::CloseBrace)
+            {
+                auto beginIndex = 2;
+                auto paramsLength = closingBraceIndex - beginIndex;
+            }
+            else
+            {
+                // TODO: better error handling.
+                LogPrint("Error: Unexpected end of attribute parameters list: %s\n", attributeString);
+                return nullptr;
+            }
+        }
+        else
+        {
+            // TODO: better error handling.
+            LogPrint("Error: Unexpected token after attribute name: %s\n", attributeString);
+            return nullptr;
+        }
+    }
+    else
+    {
+        // TODO: better error handling.
+        LogPrint("Error: attribute must begin with identifier: %s\n", attributeString);
+        return nullptr;
+    }
+}
+
+struct ParseAttributeResult
+{
+    bool succeed;
+    AttributeData* data;
+};
+
+ParseAttributeResult ParseAttribute(const char* attribString)
+{
+    ParseAttributeResult result = {};
+
+    // Cache tokenizer.
     AttributesTokenizer tokenizer = {};
     tokenizer.at = attribString;
     TokenizeAttribute(&tokenizer);
 
-    for (auto token : tokenizer.tokens)
+    if (tokenizer.tokens.size() == 0 || (tokenizer.tokens.size() == 1 && tokenizer.tokens.back().type == AttributeTokenType::End))
     {
-        if (token.type == AttributeTokenType::Error)
+        result.succeed = true;
+        return result;
+    }
+
+    // Something is wrong
+    if (tokenizer.tokens.back().type != AttributeTokenType::End)
+    {
+        if (tokenizer.tokens.back().type == AttributeTokenType::Error)
         {
+            auto& token = tokenizer.tokens.back();
             std::string temp(attribString);
             auto pos = (uptr)token.errorPosition - (uptr)attribString;
-
             // printf red color.
             temp.insert(pos, "\033[0;31m|>\033[0m");
-
-            printf("Error: %.*s: %s\n", token.length, token.str, temp.c_str());
+            // TODO: text position
+            LogPrint("Attribute parsing error: %.*s: %s\n", token.length, token.str, temp.c_str());
         }
         else
         {
-            printf("%s\t%.*s\n", AttributeTokenType_Strings[(u32)token.type], token.length, token.str);
+            LogPrint("Unexpected end of attribute: %s\n", attribString);
         }
+
+        result.succeed = false;
+        return result;
     }
+
+    for (auto token : tokenizer.tokens)
+    {
+        printf("%s\t%.*s\n", AttributeTokenType_Strings[(u32)token.type], token.length, token.str);
+    }
+
+    return result;
 }
 
 void ExtractAttributes(CXCursor cursor, VisitorData* data, AttributeData** outAttrbutes, u32* outAttrbutesCount)
